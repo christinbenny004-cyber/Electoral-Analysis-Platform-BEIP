@@ -1,0 +1,52 @@
+# =========================
+# Environment & Secrets
+# =========================
+.env
+*.env.local
+
+# =========================
+# Raw Data (too large for Git)
+# =========================
+data/raw/
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# =========================
+# Airflow
+# =========================
+logs/
+airflow-data/
+airflow.cfg
+webserver_config.py
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Docker
+# =========================
+postgres-data/
