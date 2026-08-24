@@ -3,6 +3,7 @@
 # =========================
 .env
 *.env.local
+.env.example
 
 # =========================
 # Raw Data (too large for Git)
