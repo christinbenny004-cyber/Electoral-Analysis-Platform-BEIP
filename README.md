@@ -62,7 +62,7 @@ beip/
 ├── dags/                     ← Airflow DAGs (Week 3)
 ├── docker-compose.yml
 ├── requirements.txt
-└── .env.example
+
 ```
 
 ## Data Sources
