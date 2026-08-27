@@ -89,6 +89,6 @@ Raw Sources → Bronze (raw) → Validation → Silver (clean)
 
 | Phase | Focus | Status |
 |---|---|---|
-| **Phase 1** | Data Engineering | 🔨 In Progress |
-| Phase 2 | Feature Engineering + ML | ⏳ Not Started |
-| Phase 3 | Serving + Deployment | ⏳ Not Started |
+| **Phase 1** | Data Engineering | ✅ Complete |
+| **Phase 2** | Feature Engineering + ML | ✅ Complete |
+| **Phase 3** | Serving + Deployment | 🚀 Next |
