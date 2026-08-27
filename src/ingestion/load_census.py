@@ -41,14 +41,18 @@ COLUMN_MAP = {
     "District Code": "district_code",
     "District code": "district_code",
     "district_code": "district_code",
-    "State": "state_name",
     "State Name": "state_name",
     "State/UT": "state_name",
     "state_name": "state_name",
-    "District": "district_name",
     "District Name": "district_name",
     "district_name": "district_name",
-    "Name": "district_name",
+    
+    # PCA specific columns
+    "State": "state_code",
+    "District": "district_code",
+    "Level": "level",
+    "Name": "name_raw",
+
     # Population
     "Total Population": "total_population",
     "Total_Population": "total_population",
@@ -94,7 +98,6 @@ EXPECTED_COLUMNS = [
     "source_file",
 ]
 
-
 def find_census_file():
     """Look for Census data files in data/raw/."""
     raw_dir = Path(__file__).resolve().parent.parent.parent / "data" / "raw"
@@ -109,23 +112,15 @@ def find_census_file():
                 return files[0]
     return None
 
-
 def load_file(file_path: str) -> pd.DataFrame:
-    """
-    Read Census data file (Excel or CSV) with messy header handling.
-    """
+    """Read Census data file."""
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
 
     if path.suffix in [".xlsx", ".xls"]:
-        # Census Excel files often have:
-        # - Multiple header rows (try rows 0-5)
-        # - Merged cells
-        # - Summary rows at top
         df = _read_excel_with_header_detection(path)
     else:
-        # CSV
         for encoding in ["utf-8", "latin-1", "cp1252"]:
             try:
                 df = pd.read_csv(path, encoding=encoding, low_memory=False)
@@ -138,80 +133,60 @@ def load_file(file_path: str) -> pd.DataFrame:
     print(f"  [FILE] Read {len(df):,} rows x {len(df.columns)} columns from {path.name}")
     return df
 
-
 def _read_excel_with_header_detection(path: Path) -> pd.DataFrame:
-    """
-    Try different header rows to find the actual data header in messy Excel files.
-    Census files often have title rows, merged cells, etc. before the real header.
-    """
     best_df = None
     best_score = 0
-
     for header_row in range(0, 8):
         try:
             df = pd.read_excel(path, header=header_row)
-            
-            # Score: how many of our known column names appear?
             score = sum(1 for col in df.columns if col in COLUMN_MAP)
-            
             if score > best_score:
                 best_score = score
                 best_df = df
-                
-            # If we found a lot of matches, stop searching
             if score >= 5:
                 print(f"  [INFO] Found data header at row {header_row} ({score} known columns)")
                 return df
         except Exception:
             continue
-
     if best_df is not None:
         print(f"  [INFO] Best header match: {best_score} known columns")
         return best_df
-
-    # Last resort: just read with default header
     return pd.read_excel(path)
 
-
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename columns to our schema, filtering to district-level data only."""
-    # Strip whitespace from column names
     df.columns = df.columns.str.strip()
-
-    # Rename using mapping
-    renamed = {}
-    for col in df.columns:
-        if col in COLUMN_MAP:
-            renamed[col] = COLUMN_MAP[col]
-
+    renamed = {col: COLUMN_MAP[col] for col in df.columns if col in COLUMN_MAP}
     df = df.rename(columns=renamed)
-    
-    # Drop duplicate columns that might result from multiple headers mapping to the same name
     df = df.loc[:, ~df.columns.duplicated()]
 
-    # Keep only columns we need
-    valid_cols = [c for c in EXPECTED_COLUMNS if c in df.columns and c != "source_file"]
-    if len(valid_cols) < 3:
-        print(f"  [WARN] Only found {len(valid_cols)} expected columns: {valid_cols}")
-        print(f"  [WARN] Available columns: {list(df.columns)[:20]}")
-
+    valid_cols = [c for c in EXPECTED_COLUMNS + ["level", "name_raw"] if c in df.columns and c != "source_file"]
     return df[valid_cols]
 
-
 def clean_census_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Basic cleaning specific to Census data."""
     df = df.copy()
 
-    # Remove rows where district_name is null or looks like a header/total row
+    # Extract actual names from PCA format
+    if "level" in df.columns and "name_raw" in df.columns:
+        # Create state name mapping from STATE rows
+        states = df[df["level"].astype(str).str.upper() == "STATE"][["state_code", "name_raw"]].drop_duplicates()
+        states = states.rename(columns={"name_raw": "state_name"})
+        
+        # Merge state names back
+        df = df.merge(states, on="state_code", how="left")
+        
+        # Extract district names for DISTRICT rows
+        df["district_name"] = df.apply(
+            lambda row: row["name_raw"] if str(row["level"]).upper() == "DISTRICT" else None, 
+            axis=1
+        )
+
     if "district_name" in df.columns:
         df = df.dropna(subset=["district_name"])
-        # Remove aggregate rows (state totals, India total)
         skip_patterns = ["total", "india", "state", "all district"]
         mask = df["district_name"].astype(str).str.lower().str.strip()
         for pattern in skip_patterns:
             df = df[~mask.str.startswith(pattern)]
 
-    # Ensure numeric columns are numeric
     numeric_cols = [
         "total_population", "male_population", "female_population",
         "total_literate", "male_literate", "female_literate",
@@ -220,6 +195,9 @@ def clean_census_data(df: pd.DataFrame) -> pd.DataFrame:
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Drop temporary columns
+    df = df.drop(columns=[c for c in ["level", "name_raw"] if c in df.columns])
 
     return df
 

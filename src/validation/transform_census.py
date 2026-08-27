@@ -49,16 +49,55 @@ STATE_NAME_MAP = {
 
 
 def load_bronze_data() -> pd.DataFrame:
-    """Load all data from bronze.census_demographics."""
+    """Load all data from bronze.census_demographics.
+
+    Dynamically detects available columns since the bronze table schema
+    depends on how the Census file was originally ingested.
+    """
     engine = get_engine()
+
+    # Discover actual columns
+    with engine.connect() as conn:
+        result = conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'bronze' AND table_name = 'census_demographics'"
+        ))
+        available_cols = {row[0] for row in result}
+
+    desired_cols = [
+        "state_code", "district_code", "state_name", "district_name",
+        "total_population", "male_population", "female_population",
+        "total_literate", "male_literate", "female_literate",
+        "sc_population", "st_population", "total_workers",
+    ]
+    select_cols = [c for c in desired_cols if c in available_cols]
+    missing = set(desired_cols) - available_cols
+    if missing:
+        print(f"  [WARN] Bronze table missing columns (will be set to null): {missing}")
+
     with engine.connect() as conn:
         df = pd.read_sql(
-            "SELECT id, state_code, district_code, state_name, district_name, "
-            "total_population, male_population, female_population, "
-            "total_literate, sc_population, st_population, total_workers "
-            "FROM bronze.census_demographics",
+            f"SELECT {', '.join(select_cols)} FROM bronze.census_demographics",
             conn
         )
+
+    # Add missing columns as nulls
+    for col in desired_cols:
+        if col not in df.columns:
+            df[col] = None
+
+    # Handle case where state_name / district_name are numeric codes, not text
+    # (Census ingestion sometimes stores codes in these columns)
+    for col in ["state_name", "district_name"]:
+        if col in df.columns and df[col].dtype in ["int64", "float64"]:
+            print(f"  [WARN] '{col}' is numeric (code), not text name — treating as code")
+            if col == "state_name" and "state_code" not in available_cols:
+                df["state_code"] = df["state_name"]
+                df["state_name"] = None
+            elif col == "district_name" and "district_code" not in available_cols:
+                df["district_code"] = df["district_name"]
+                df["district_name"] = None
+
     print(f"  [LOAD] Read {len(df):,} rows from bronze.census_demographics")
     return df
 

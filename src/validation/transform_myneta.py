@@ -100,33 +100,94 @@ CRORE = 10_000_000  # 1 Crore = 10 million INR
 
 
 def load_bronze_data() -> pd.DataFrame:
-    """Load all data from bronze.candidate_affidavits."""
+    """Load all data from bronze.candidate_affidavits.
+
+    Reads only the columns that are guaranteed to exist in the bronze table,
+    which may vary depending on the ingestion method (file vs. scraper).
+    """
     engine = get_engine()
+    # Discover actual columns in the bronze table
+    with engine.connect() as conn:
+        result = conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'bronze' AND table_name = 'candidate_affidavits'"
+        ))
+        available_cols = {row[0] for row in result}
+
+    # Map to expected column names and select what exists
+    # Some ingestion runs may not have state_name or serious_criminal_cases
+    desired_cols = [
+        "year", "state_name", "constituency_name", "candidate_name",
+        "party", "criminal_cases", "serious_criminal_cases",
+        "education", "total_assets", "total_liabilities",
+    ]
+    select_cols = [c for c in desired_cols if c in available_cols]
+    missing = set(desired_cols) - available_cols
+    if missing:
+        print(f"  [WARN] Bronze table missing columns (will be set to null): {missing}")
+
     with engine.connect() as conn:
         df = pd.read_sql(
-            "SELECT id, year, state_name, constituency_name, candidate_name, "
-            "party, criminal_cases, serious_criminal_cases, education, "
-            "total_assets, total_liabilities "
-            "FROM bronze.candidate_affidavits",
+            f"SELECT {', '.join(select_cols)} FROM bronze.candidate_affidavits",
             conn
         )
+
+    # Add missing columns as nulls so downstream steps don't fail
+    for col in desired_cols:
+        if col not in df.columns:
+            df[col] = None
+
     print(f"  [LOAD] Read {len(df):,} rows from bronze.candidate_affidavits")
     return df
 
 
 def clean_names(df: pd.DataFrame) -> pd.DataFrame:
-    """Standardize name columns: strip, title case, remove underscores."""
+    """Standardize name columns: strip, title case, remove underscores.
+
+    Also handles scraping artifacts from MyNeta:
+      - '&Nbsp' / '&nbsp' HTML entities left in candidate names
+      - 'winner' / 'lost' suffixes appended to candidate names
+      - 'And' vs '&' mismatch in constituency names (election results use '&')
+    """
     df = df.copy()
-    for col in ["candidate_name", "state_name", "constituency_name"]:
-        if col in df.columns:
-            df[col] = (
-                df[col]
-                .astype(str)
-                .str.strip()
-                .str.replace("_", " ", regex=False)
-                .str.replace(r"\s+", " ", regex=True)
-                .str.title()
-            )
+
+    # Clean candidate_name: remove HTML artifacts and status tags from scraping
+    if "candidate_name" in df.columns:
+        df["candidate_name"] = (
+            df["candidate_name"]
+            .astype(str)
+            .str.replace(r"(?i)&nbsp;?", " ", regex=True)   # HTML &nbsp entities
+            .str.replace(r"(?i)\s*(winner|lost|deposit lost)\s*$", "", regex=True)  # Status suffixes
+            .str.replace("_", " ", regex=False)
+            .str.replace(r"\s+", " ", regex=True)            # Collapse whitespace
+            .str.strip()
+            .str.title()
+        )
+
+    # Clean constituency_name: use '&' instead of 'And' to match election results
+    if "constituency_name" in df.columns:
+        df["constituency_name"] = (
+            df["constituency_name"]
+            .astype(str)
+            .str.replace("_", " ", regex=False)
+            .str.replace(r"\s+", " ", regex=True)
+            .str.strip()
+            .str.title()
+        )
+        # Replace ' And ' with ' & ' to match election results format
+        df["constituency_name"] = df["constituency_name"].str.replace(" And ", " & ", regex=False)
+
+    # Clean state_name
+    if "state_name" in df.columns:
+        df["state_name"] = (
+            df["state_name"]
+            .astype(str)
+            .str.replace("_", " ", regex=False)
+            .str.replace(r"\s+", " ", regex=True)
+            .str.strip()
+            .str.title()
+        )
+
     return df
 
 
@@ -227,11 +288,9 @@ def select_silver_columns(df: pd.DataFrame) -> pd.DataFrame:
         "total_assets",
         "total_liabilities",
         "is_crorepati",
-        "id",  # will be renamed to bronze_id
     ]
     available = [c for c in silver_cols if c in df.columns]
-    df = df[available].rename(columns={"id": "bronze_id"})
-    return df
+    return df[available]
 
 
 def write_to_silver(df: pd.DataFrame):
